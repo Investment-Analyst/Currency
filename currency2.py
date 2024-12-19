@@ -1,15 +1,16 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from datetime import datetime
+import matplotlib.pyplot as plt
 
-# 設定資料期間
+# 設定資料期間(從2021-01-01至今)
 start_date = "2021-01-01"
 end_date = datetime.today().strftime("%Y-%m-%d")
 
 # 下載USD/CNY日線匯率資料 (CNY=X 是USD/CNY)
 data = yf.download("CNY=X", start=start_date, end=end_date)
+
 if data.empty:
     raise ValueError("無法取得價格資料，請檢查代碼或日期範圍")
 
@@ -38,18 +39,11 @@ def MACD(series, fast=12, slow=26, signal=9):
     return macd_line, signal_line, hist
 
 
-# 計算EMA (例如 20日、50日)
-data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
-data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
-
-# 計算指標
 data['RSI'] = RSI(data['Close'], 14)
 data['MACD_line'], data['Signal_line'], data['Hist'] = MACD(data['Close'])
 
-# ---------------------
-# 建立策略邏輯(簡化版)：同前回測程式，將交易時機記錄下來用於繪圖
-# ---------------------
-position = 0
+# 回測策略
+position = 0  # 0: 無部位, 1: 做多, -1: 做空
 entry_price = 0.0
 trades = []
 rsi_overbought = False
@@ -88,7 +82,7 @@ for i in range(len(data)):
             rsi_overbought = False
             trades.append({'Date': date, 'Type': 'Sell', 'Price': entry_price})
 
-        # 若已在多單，遇死亡交叉 + RSI>70 平多並反向做空 (簡化策略)
+        # 多單轉空單
         if position == 1 and death_cross and rsi > 70:
             exit_price = close_price
             pnl = exit_price - entry_price
@@ -100,19 +94,19 @@ for i in range(len(data)):
             trades.append({'Date': date, 'Type': 'Sell', 'Price': entry_price})
             rsi_overbought = False
 
-        # 若已在空單，遇黃金交叉 + RSI<30 平空並反向做多 (簡化策略)
+        # 空單轉多單
         if position == -1 and golden_cross and rsi < 30:
             exit_price = close_price
             pnl = entry_price - exit_price
             trades.append({'Date': date, 'Type': 'Buy_to_close', 'Price': exit_price, 'PnL': pnl})
             position = 0
-            # 做多
+            # 進多
             position = 1
             entry_price = close_price
             trades.append({'Date': date, 'Type': 'Buy', 'Price': entry_price})
             rsi_oversold = False
 
-# 最後持倉平倉
+# 最後持倉在回測結束日平倉
 if position != 0:
     exit_price = data['Close'].iloc[-1]
     if position == 1:
@@ -125,49 +119,49 @@ if position != 0:
 
 trade_df = pd.DataFrame(trades)
 
-# ---------------------
-# 繪圖
-# ---------------------
-fig = plt.figure(figsize=(14, 10))
-ax1 = plt.subplot2grid((3, 1), (0, 0))
-ax2 = plt.subplot2grid((3, 1), (1, 0))
-ax3 = plt.subplot2grid((3, 1), (2, 0))
+print("交易紀錄：")
+print(trade_df)
 
-# 第一張子圖：價格、EMA及買賣點
-ax1.plot(data.index, data['Close'], label='Close Price')
-ax1.plot(data.index, data['EMA20'], label='EMA20', alpha=0.7)
-ax1.plot(data.index, data['EMA50'], label='EMA50', alpha=0.7)
+# 計算策略總PnL
+if 'PnL' in trade_df.columns:
+    strategy_pnl = trade_df['PnL'].sum(skipna=True)
+else:
+    strategy_pnl = 0.0
 
-# 在價格圖上標記交易點
-buy_signals = trade_df[(trade_df['Type'] == 'Buy') | (trade_df['Type'] == 'Buy_to_close')]
-sell_signals = trade_df[(trade_df['Type'] == 'Sell') | (trade_df['Type'] == 'Sell_to_close')]
+print(f"策略總損益 (CNY): {strategy_pnl}")
 
-ax1.scatter(buy_signals['Date'], buy_signals['Price'], marker='^', color='green', s=100, label='Buy signals')
-ax1.scatter(sell_signals['Date'], sell_signals['Price'], marker='v', color='red', s=100, label='Sell signals')
+# 計算基準：買入並持有策略
+# 假設在2021-01-01以當日收盤價買入1 USD，最後以最後收盤價賣出
+start_price = data['Close'].iloc[0]
+end_price = data['Close'].iloc[-1]
+benchmark_pnl = end_price - start_price
+print(f"基準買入並持有策略損益 (CNY)：{benchmark_pnl}")
 
-ax1.set_title('USD/CNY Price with Trades')
-ax1.set_ylabel('Price (USD/CNY)')
-ax1.legend()
-ax1.grid(True)
+strategy_pnl = float(trade_df['PnL'].sum(skipna=True))
+benchmark_pnl = float(end_price - start_price)
 
-# 第二張子圖：RSI
-ax2.plot(data.index, data['RSI'], label='RSI', color='orange')
-ax2.axhline(70, color='red', linestyle='--', alpha=0.5)
-ax2.axhline(30, color='green', linestyle='--', alpha=0.5)
-ax2.set_title('RSI(14)')
-ax2.set_ylabel('RSI')
-ax2.grid(True)
-ax2.legend()
 
-# 第三張子圖：MACD
-ax3.plot(data.index, data['MACD_line'], label='MACD_line', color='blue')
-ax3.plot(data.index, data['Signal_line'], label='Signal_line', color='red')
-ax3.bar(data.index, data['Hist'], label='MACD Hist', color='gray', alpha=0.5)
-ax3.set_title('MACD(12,26,9)')
-ax3.set_ylabel('Value')
-ax3.legend()
-ax3.grid(True)
+# 比較策略與基準
+# 策略pnl > 基準pnl 則策略表現優於大盤，反之劣於
+if strategy_pnl > benchmark_pnl:
+    print("策略表現優於大盤(買入並持有)。")
+elif strategy_pnl < benchmark_pnl:
+    print("策略表現不如大盤(買入並持有)。")
+else:
+    print("策略表現與大盤相當。")
 
-plt.tight_layout()
+# 繪製最後的價格與交易點可視化 (簡單示意)
+plt.figure(figsize=(12, 6))
+plt.plot(data.index, data['Close'], label='Close Price')
+buy_points = trade_df[trade_df['Type'].str.contains('Buy')].dropna()
+sell_points = trade_df[trade_df['Type'].str.contains('Sell')].dropna()
+
+plt.scatter(buy_points['Date'], buy_points['Price'], marker='^', color='green', s=100, label='Buy Points')
+plt.scatter(sell_points['Date'], sell_points['Price'], marker='v', color='red', s=100, label='Sell Points')
+
+plt.title('USD/CNY Close Price with Trading Signals')
+plt.xlabel('Date')
+plt.ylabel('Price (CNY per USD)')
+plt.legend()
+plt.grid(True)
 plt.show()
-
