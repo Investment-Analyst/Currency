@@ -56,9 +56,9 @@ for i in range(len(data)):
     close_price = data['Close'].iloc[i]
     date = data.index[i]
 
-    if rsi > 70:
+    if rsi > 50:
         rsi_overbought = True
-    elif rsi < 30:
+    elif rsi < 50:
         rsi_oversold = True
 
     if i > 0:
