@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 # --------------------------
 symbol = "CNY=X"  # 在 Yahoo Finance 代表離岸人民幣
 start_date = "2020-01-01"
-end_date = "2024-12-25"
+end_date = "2024-12-28"
 
 df = yf.download(symbol, start=start_date, end=end_date)
 df.dropna(inplace=True)
@@ -52,10 +52,11 @@ df['Crossover'] = df['Signal'].diff()
 # --------------------------
 position = 0  # 0=無倉, +1=多單, -1=空單
 entry_price = None
-contract_size = 200000  # 單筆交易規模 (例如10萬美元)
+contract_size = 300000 # 單筆交易規模 (例如10萬美元)
 initial_capital = 1000000  # 假設初始資金 100萬
 
 trade_records = []  # 紀錄每筆交易 (開倉、平倉)
+daily_values = [initial_capital]  # 每日資產價值
 
 for i in range(1, len(df)):
     date_i = df.index[i]
@@ -69,7 +70,6 @@ for i in range(1, len(df)):
         if signal_i == 1:
             # 若手上有空單, 先平空
             if position == -1:
-                # 空單損益 = (做空時的 entry_price - 現在的平倉價) * 合約數量
                 pnl = (entry_price - price_i) * contract_size
                 trade_records.append({
                     'Date': date_i.strftime('%Y-%m-%d'),
@@ -80,7 +80,6 @@ for i in range(1, len(df)):
             # 再開多
             position = 1
             entry_price = price_i
-            # 開多時，PnL=0 (開倉動作本身無盈虧)
             trade_records.append({
                 'Date': date_i.strftime('%Y-%m-%d'),
                 'Action': 'Buy',
@@ -102,7 +101,6 @@ for i in range(1, len(df)):
             # 再開空
             position = -1
             entry_price = price_i
-            # 開空時，PnL=0
             trade_records.append({
                 'Date': date_i.strftime('%Y-%m-%d'),
                 'Action': 'Sell',
@@ -110,12 +108,19 @@ for i in range(1, len(df)):
                 'PnL': 0
             })
 
+    # 記錄每日資產價值
+    daily_value = initial_capital + sum([rec['PnL'] for rec in trade_records])
+    if position == 1:
+        daily_value += (price_i - entry_price) * contract_size
+    elif position == -1:
+        daily_value += (entry_price - price_i) * contract_size
+    daily_values.append(daily_value)
+
 # 若最後一天還有倉位，結算平倉
 if position != 0:
     final_price = df['Price'].iloc[-1]
     final_date = df.index[-1].strftime('%Y-%m-%d')
     if position == 1:
-        # 平多
         pnl = (final_price - entry_price) * contract_size
         trade_records.append({
             'Date': final_date,
@@ -124,7 +129,6 @@ if position != 0:
             'PnL': pnl
         })
     elif position == -1:
-        # 平空
         pnl = (entry_price - final_price) * contract_size
         trade_records.append({
             'Date': final_date,
@@ -134,27 +138,30 @@ if position != 0:
         })
 
 # --------------------------
-# 5. 計算策略最終資產價值 vs. Buy & Hold
+# 5. 計算策略績效指標
 # --------------------------
-# (A) 策略回測：根據每筆交易的PnL累加
+# 策略最終資產價值
 total_pnl = sum([rec['PnL'] for rec in trade_records])
 final_strategy_value = initial_capital + total_pnl
 strategy_return_percent = (final_strategy_value - initial_capital) / initial_capital * 100
 
-# (B) Buy & Hold：假設在2020-01-01用全部CNY買美元後持有到最後
-first_price = df['Price'].iloc[0]
-last_price = df['Price'].iloc[-1]
-# 能買多少美元
-buyhold_usd = initial_capital / first_price
-# 結束時的資產價值 (回成CNY)
-final_buyhold_value = buyhold_usd * last_price
-buyhold_return_percent = (final_buyhold_value - initial_capital) / initial_capital * 100
+# 最大回撤
+daily_values = np.array(daily_values)
+drawdowns = (daily_values / np.maximum.accumulate(daily_values)) - 1
+max_drawdown = drawdowns.min()
+
+# 勝率
+winning_trades = [rec for rec in trade_records if rec['PnL'] > 0]
+win_rate = len(winning_trades) / len(trade_records) * 100 if trade_records else 0
+
+# 風險報酬比
+annualized_return = (1 + strategy_return_percent / 100) ** (1 / (len(df) / 252)) - 1
+annualized_volatility = np.std(drawdowns) * np.sqrt(252)
+risk_reward_ratio = annualized_return / annualized_volatility if annualized_volatility != 0 else np.nan
 
 # --------------------------
-# 6. 繪圖 (A) 主圖 - 價格, MA, Bollinger; (B) MACD
+# 6. 繪圖
 # --------------------------
-df.dropna(inplace=True)  # 確保繪圖不會因NA出錯
-
 fig = plt.figure(figsize=(14, 8))
 
 # (A) 主圖
@@ -174,13 +181,10 @@ for r in trade_records:
 
     if 'Buy' in action and 'Close' not in action:
         # Buy 開多用紅色三角向上
-        ax1.scatter(trade_date, trade_px, marker='^', color='red', s=100)
+        ax1.scatter(trade_date, trade_px, marker='^', color='red', s=150)
     elif 'Sell' in action and 'Close' not in action:
         # Sell 開空用綠色三角向下
-        ax1.scatter(trade_date, trade_px, marker='v', color='green', s=100)
-    elif 'Close' in action:
-        # 平倉用紫色菱形
-        ax1.scatter(trade_date, trade_px, marker='D', color='purple', s=80)
+        ax1.scatter(trade_date, trade_px, marker='v', color='green', s=150)
 
 ax1.legend(loc='upper left')
 
@@ -205,5 +209,6 @@ for r in trade_records:
 print("\n=== 回測結果 ===")
 print(f"最終策略資產價值: {final_strategy_value:,.2f}")
 print(f"策略報酬率: {strategy_return_percent:.2f} %")
-print(f"Buy & Hold 資產價值: {final_buyhold_value:,.2f}")
-print(f"Buy & Hold 報酬率: {buyhold_return_percent:.2f} %")
+print(f"最大回撤: {max_drawdown:.2%}")
+print(f"勝率: {win_rate:.2f} %")
+print(f"風險報酬比: {risk_reward_ratio:.2f}")

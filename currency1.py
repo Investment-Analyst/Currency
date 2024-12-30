@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 # 設定資料期間
-start_date = "2021-01-01"
+start_date = "2020-01-01"
 end_date = datetime.today().strftime("%Y-%m-%d")
 
 # 下載USD/CNY日線匯率資料 (CNY=X 是USD/CNY)

@@ -4,8 +4,8 @@ import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-# 設定資料期間(從2021-01-01至今)
-start_date = "2021-01-01"
+# 設定資料期間(從2020-01-01至今)
+start_date = "2020-01-01"
 end_date = datetime.today().strftime("%Y-%m-%d")
 
 # 下載USD/CNY日線匯率資料 (CNY=X 是USD/CNY)

@@ -6,112 +6,101 @@ import matplotlib.pyplot as plt
 # --------------------------
 # 1. 下載/載入 USD/CNY (示例: 離岸人民幣 CNH=X)
 # --------------------------
-symbol = "CNY=X"  # 在 Yahoo Finance 代表離岸人民幣
+symbol = "CNY=X"
 start_date = "2020-01-01"
-end_date = "2024-12-25"
+end_date = "2024-12-28"
 
 df = yf.download(symbol, start=start_date, end=end_date)
 df.dropna(inplace=True)
 df['Price'] = df['Close']  # 收盤價
 
 # --------------------------
-# 2. 計算技術指標 (MA, Bollinger, MACD)
+# 2. 計算技術指標 (MA, MACD, RSI, Bollinger Bands)
 # --------------------------
 short_window = 20
 long_window = 50
 
-# 移動平均 (MA)
+# 移動平均
 df['MA_short'] = df['Price'].rolling(window=short_window).mean()
 df['MA_long'] = df['Price'].rolling(window=long_window).mean()
 
 # MACD
-exp1 = df['Price'].ewm(span=12, adjust=False).mean()
+exp1 = df['Price'].ewm(span=13, adjust=False).mean()
 exp2 = df['Price'].ewm(span=26, adjust=False).mean()
 df['MACD'] = exp1 - exp2
 df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
 df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
 
-# 布林通道 (以短均線為中心) - 20日為例
+# RSI
+window_rsi = 14
+delta = df['Price'].diff()
+gain = np.where(delta > 0, delta, 0)
+loss = np.where(delta < 0, -delta, 0)
+avg_gain = pd.Series(gain).rolling(window=window_rsi).mean()
+avg_loss = pd.Series(loss).rolling(window=window_rsi).mean()
+rs = avg_gain / avg_loss
+df['RSI'] = 100 - (100 / (1 + rs))
+
+# 布林通道
 df['std'] = df['Price'].rolling(window=short_window).std()
 df['Boll_Upper'] = df['MA_short'] + 2 * df['std']
 df['Boll_Lower'] = df['MA_short'] - 2 * df['std']
 
 # --------------------------
-# 3. 建立交易信號 (MA Cross)
-#    短均線 > 長均線 => 信號=1 (看多), 否則=-1 (看空)
+# 3. 建立交易信號 (MA, MACD)
 # --------------------------
+# Signal generation mechanism:
+# - A "Buy" signal is generated when the short-term moving average (MA_short) crosses above the long-term moving average (MA_long),
+#   and the MACD value is greater than its signal line (MACD_Signal). This indicates a potential upward trend.
+# - A "Sell" signal is generated when the short-term moving average (MA_short) crosses below the long-term moving average (MA_long),
+#   and the MACD value is less than its signal line (MACD_Signal). This indicates a potential downward trend.
 df['Signal'] = 0
-df.loc[df['MA_short'] > df['MA_long'], 'Signal'] = 1
-df.loc[df['MA_short'] < df['MA_long'], 'Signal'] = -1
+df.loc[
+    (df['MA_short'] > df['MA_long']) & (df['MACD'] > df['MACD_Signal']),
+    'Signal'
+] = 1  # Buy 信號
 
-# 觀察信號變化 (差分) 以捕捉交叉點
+df.loc[
+    (df['MA_short'] < df['MA_long']) & (df['MACD'] < df['MACD_Signal']),
+    'Signal'
+] = -1  # Sell 信號
+
 df['Crossover'] = df['Signal'].diff()
 
 # --------------------------
-# 4. 回測邏輯：多空策略 + 印交易紀錄
+# 4. 回測邏輯
 # --------------------------
-position = 0  # 0=無倉, +1=多單, -1=空單
+position = 0
 entry_price = None
-contract_size = 200000  # 單筆交易規模 (例如10萬美元)
-initial_capital = 1000000  # 假設初始資金 100萬
+contract_size = 300000
+initial_capital = 1000000
 
-trade_records = []  # 紀錄每筆交易 (開倉、平倉)
-daily_values = [initial_capital]  # 紀錄每日資產價值
+trade_records = []
+daily_values = [initial_capital]
 
 for i in range(1, len(df)):
     date_i = df.index[i]
     price_i = df['Price'].iloc[i]
-    crossover = df['Crossover'].iloc[i]  # 與上一根相比的變化
+    crossover = df['Crossover'].iloc[i]
     signal_i = df['Signal'].iloc[i]
 
-    # 若 crossover != 0, 代表短均線與長均線發生交叉 (或由0 -> 1 or -1)
+    # 添加倉位檢查以防止同方向信號的重複執行
     if crossover != 0:
-        # --- Buy Signal ---
-        if signal_i == 1:
-            # 若手上有空單, 先平空
-            if position == -1:
-                # 空單損益 = (做空時的 entry_price - 現在的平倉價) * 合約數量
+        if signal_i == 1 and position != 1:  # Buy 信號，只在非多頭時執行
+            if position == -1:  # 平空
                 pnl = (entry_price - price_i) * contract_size
-                trade_records.append({
-                    'Date': date_i.strftime('%Y-%m-%d'),
-                    'Action': 'Close Short',
-                    'Price': price_i,
-                    'PnL': pnl
-                })
-            # 再開多
+                trade_records.append({'Date': date_i, 'Action': 'Close Short', 'Price': price_i, 'PnL': pnl})
             position = 1
             entry_price = price_i
-            # 開多時，PnL=0 (開倉動作本身無盈虧)
-            trade_records.append({
-                'Date': date_i.strftime('%Y-%m-%d'),
-                'Action': 'Buy',
-                'Price': price_i,
-                'PnL': 0
-            })
-
-        # --- Sell Signal ---
-        elif signal_i == -1:
-            # 若手上有多單, 先平多
-            if position == 1:
+            trade_records.append({'Date': date_i, 'Action': 'Buy', 'Price': price_i, 'PnL': 0})
+        elif signal_i == -1 and position != -1:  # Sell 信號，只在非空頭時執行
+            if position == 1:  # 平多
                 pnl = (price_i - entry_price) * contract_size
-                trade_records.append({
-                    'Date': date_i.strftime('%Y-%m-%d'),
-                    'Action': 'Close Long',
-                    'Price': price_i,
-                    'PnL': pnl
-                })
-            # 再開空
+                trade_records.append({'Date': date_i, 'Action': 'Close Long', 'Price': price_i, 'PnL': pnl})
             position = -1
             entry_price = price_i
-            # 開空時，PnL=0
-            trade_records.append({
-                'Date': date_i.strftime('%Y-%m-%d'),
-                'Action': 'Sell',
-                'Price': price_i,
-                'PnL': 0
-            })
+            trade_records.append({'Date': date_i, 'Action': 'Sell', 'Price': price_i, 'PnL': 0})
 
-    # 記錄每日資產價值 (假設當前持倉的未實現盈虧)
     daily_value = initial_capital + sum([rec['PnL'] for rec in trade_records])
     if position == 1:
         daily_value += (price_i - entry_price) * contract_size
@@ -119,7 +108,6 @@ for i in range(1, len(df)):
         daily_value += (entry_price - price_i) * contract_size
     daily_values.append(daily_value)
 
-# 若最後一天還有倉位，結算平倉
 if position != 0:
     final_price = df['Price'].iloc[-1]
     final_date = df.index[-1]
@@ -146,13 +134,41 @@ max_drawdown = drawdowns.min()
 winning_trades = [rec for rec in trade_records if rec['PnL'] > 0]
 win_rate = len(winning_trades) / len(trade_records) * 100 if trade_records else 0
 
-# 風險報酬比 (假設年化收益率 / 年化波動率)
+# 風險報酬比
 annualized_return = (1 + strategy_return_percent / 100) ** (1 / (len(df) / 252)) - 1
 annualized_volatility = np.std(drawdowns) * np.sqrt(252)
 risk_reward_ratio = annualized_return / annualized_volatility if annualized_volatility != 0 else np.nan
 
 # --------------------------
-# 6. 列印回測結果
+# 6. 繪圖
+# --------------------------
+fig, (ax1, ax3) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
+
+# 主圖
+ax1.plot(df.index, df['Price'], label='Price', color='black')
+ax1.plot(df.index, df['MA_short'], label=f'MA_{short_window}', color='blue')
+ax1.plot(df.index, df['MA_long'], label=f'MA_{long_window}', color='orange')
+ax1.fill_between(df.index, df['Boll_Lower'], df['Boll_Upper'], color='green', alpha=0.1, label='Bollinger Bands')
+for r in trade_records:
+    if 'Buy' in r['Action']:
+        ax1.scatter(r['Date'], r['Price'], marker='^', color='red', s=100)
+    elif 'Sell' in r['Action']:
+        ax1.scatter(r['Date'], r['Price'], marker='v', color='green', s=100)
+ax1.legend()
+ax1.set_title('Price, MA, and Bollinger Bands')
+
+# MACD 圖
+ax3.plot(df.index, df['MACD'], label='MACD', color='blue')
+ax3.plot(df.index, df['MACD_Signal'], label='MACD Signal', color='red')
+ax3.bar(df.index, df['MACD_Hist'], color='gray', alpha=0.5, label='MACD Histogram')
+ax3.legend()
+ax3.set_title('MACD')
+
+plt.tight_layout()
+plt.show()
+
+# --------------------------
+# 7. 列印回測結果
 # --------------------------
 print("=== 交易紀錄 ===")
 for r in trade_records:
@@ -164,3 +180,5 @@ print(f"策略報酬率: {strategy_return_percent:.2f} %")
 print(f"最大回撤: {max_drawdown:.2%}")
 print(f"勝率: {win_rate:.2f} %")
 print(f"風險報酬比: {risk_reward_ratio:.2f}")
+print(f"年化報酬率: {annualized_return:.2%}")
+print(f"年化波動率: {annualized_volatility:.2%}")
