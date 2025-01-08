@@ -6,19 +6,19 @@ import matplotlib.pyplot as plt
 #------------------------------------------
 # 1. 從 Yahoo Finance 下載 CNY=X 日線資料
 #------------------------------------------
-symbol = "MSFT"
-start_date = "2024-01-01"
-end_date = "2025-01-01"
+symbol = "TSLA"
+start_date = "2021-01-01"
+end_date = "2024-01-01"
 
 data = yf.download(symbol, start=start_date, end=end_date, interval="1d")
 
 if data.empty:
-    raise ValueError("無法取得QQQ資料，請確認時間區間或網路是否正常。")
+    raise ValueError("無法取得資料，請確認時間區間或網路是否正常。")
 
 #------------------------------------------
 # 2. 計算 Momentum & OBV
 #------------------------------------------
-momentum_period = 14  # 設定 Momentum 週期，可自行調整
+momentum_period = 10  # 設定 Momentum 週期，可自行調整
 data['Momentum'] = data['Close'].diff(momentum_period)
 
 # 計算 OBV
@@ -38,8 +38,6 @@ data['OBV'] = obv
 
 #------------------------------------------
 # 3. 產生買/賣訊號
-#   - Buy: Momentum > 0 & OBV 今日 > 昨日
-#   - Sell: Momentum < 0
 #------------------------------------------
 def generate_signals(df):
     buy_signals = []
@@ -79,9 +77,9 @@ data = generate_signals(data)
 plt.figure(figsize=(12, 6))
 plt.plot(data['Close'], label='Close Price', alpha=0.5)
 plt.scatter(data.index, data['Buy_Signal'], label='Buy Signal',
-            marker='^', color='green', s=100)
+            marker='^', color='green', s=50)
 plt.scatter(data.index, data['Sell_Signal'], label='Sell Signal',
-            marker='v', color='red', s=100)
+            marker='v', color='red', s=50)
 plt.title(f"Momentum + OBV Trading Signals for {symbol}")
 plt.xlabel("Date")
 plt.ylabel("Price")
@@ -90,9 +88,6 @@ plt.show()
 
 #------------------------------------------
 # 5. 回測：多/空雙向操作 (Long/Short)
-#   - Position = +1 (做多), -1 (做空)
-#   - 發現 Buy 信號 => position = +1
-#   - 發現 Sell 信號 => position = -1
 #------------------------------------------
 data['Position'] = 0  # 初始沒有定義，後面直接根據信號切換
 
@@ -113,10 +108,8 @@ for i in range(1, len(data)):
 
 #------------------------------------------
 # 6. 計算策略績效
-#   做多時，收益 = 日漲跌率；做空時，收益 = - 日漲跌率
 #------------------------------------------
 data['Daily_Return'] = data['Close'].pct_change()
-# shift(1) 模擬「當日訊號 -> 次日開盤才執行」的概念，簡易處理
 data['Strategy_Return'] = data['Position'].shift(1) * data['Daily_Return']
 
 # 累計報酬
@@ -124,11 +117,34 @@ data['Cumulative_Market'] = (1 + data['Daily_Return']).cumprod()
 data['Cumulative_Strategy'] = (1 + data['Strategy_Return']).cumprod()
 
 #------------------------------------------
-# 7. 繪製累計報酬曲線
+# 7. 計算最大回撤
+#------------------------------------------
+cum_returns = data['Cumulative_Strategy']
+rolling_max = cum_returns.cummax()
+drawdown = (cum_returns - rolling_max) / rolling_max
+max_drawdown = drawdown.min()
+
+#------------------------------------------
+# 8. 計算勝率
+#------------------------------------------
+data['Trades'] = data['Position'].diff().fillna(0).abs()
+trades = data[data['Trades'] > 0]
+positive_trades = trades[trades['Strategy_Return'] > 0]
+win_rate = len(positive_trades) / len(trades) if len(trades) > 0 else 0
+
+#------------------------------------------
+# 9. 計算風險報酬比 (Sharpe Ratio)
+#------------------------------------------
+average_return = data['Strategy_Return'].mean()
+volatility = data['Strategy_Return'].std()
+sharpe_ratio = average_return / volatility * np.sqrt(252)  # 年化Sharpe Ratio
+
+#------------------------------------------
+# 10. 繪製累計報酬曲線
 #------------------------------------------
 plt.figure(figsize=(12,6))
-plt.plot(data['Cumulative_Market'], label='Buy & Hold (QQQ)')
-plt.plot(data['Cumulative_Strategy'], label='Momentum Strategy (Long/Short)')
+plt.plot(data['Cumulative_Market'], label='Buy & Hold')
+plt.plot(data['Cumulative_Strategy'], label='Momentum Strategy')
 plt.title("Cumulative Returns Comparison")
 plt.xlabel("Date")
 plt.ylabel("Cumulative Returns")
@@ -136,11 +152,14 @@ plt.legend()
 plt.show()
 
 #------------------------------------------
-# 8. 列印最終報酬
+# 11. 列印績效數據
 #------------------------------------------
 final_strategy_return = data['Cumulative_Strategy'].iloc[-1] - 1
 final_market_return = data['Cumulative_Market'].iloc[-1] - 1
 
 print(f"交易區間: {start_date} ~ {end_date}")
-print(f"{symbol} 動量策略 (可多可空) 最終報酬率: {final_strategy_return:.2%}")
-print(f"Buy & Hold (只做多) 最終報酬率: {final_market_return:.2%}")
+print(f"{symbol} 動量策略報酬率: {final_strategy_return:.2%}")
+print(f"買進持有報酬率: {final_market_return:.2%}")
+print(f"最大回撤: {max_drawdown:.2%}")
+print(f"勝率: {win_rate:.2%}")
+print(f"風險報酬比: {sharpe_ratio:.2f}")
